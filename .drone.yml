@@ -40,10 +40,60 @@ steps:
   volumes:
   - name: docker
     path: /var/run/docker.sock
-
+- name: k3dsvc
+  image: rancher/k3d:4.4.8dind
+  detach: true
+  privileged: true
+  commands:
+    - nohup dockerd-entrypoint.sh --insecure-registry=172.0.0.0/8 &
+    - until docker ps &>/dev/null; do sleep 1s; done
+    - NEW_ID=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 6 | head -n 1)
+    - k3d registry create k3dsvc --port k3dsvc:5000
+    - k3d cluster create drone-$${NEW_ID} --config hack/k3d-drone.yaml
+    - until kubectl --context k3d-drone-$${NEW_ID} -n kube-system wait --for=condition=Ready pods -l k8s-app; do sleep 1; done
+    - k3d kubeconfig get drone-$${NEW_ID} > kubeconfig.yaml
+    - echo "k3d started successfully"
+    - tail -f /dev/null
+  when:
+    event:
+      - push
+    branch:
+      - main
+    instance:
+      - drone-pr.rancher.io
+  volumes:
+    - name: dindsock
+      path: /var/run
+- name: e2e-test
+  image: jamesonmcg/testreqs:v0.1.0
+  commands:
+    - until test -f ./kubeconfig.yaml; do sleep 1s; done
+    - echo "kubeconfig.yaml found"
+    - git clone https://github.com/rancher/opni.git /tmp/opni
+    - echo "Cloned opni"
+    - cp -f /src/opni-insights-service/tests/sonobuoy/kustomization.yaml /tmp/opni/deploy/kustomization.yaml
+    - echo "Copied kustomization.yaml"
+    - pushd /tmp/opni
+    - tilt ci
+    - echo "Tilt CI completed"
+    - popd
+    - sonobuoy/shell_scripts/sonobuoy_run.sh
+    - echo "Sonobuoy completed"
+  volumes:
+    - name: dindsock
+      path: /var/run
+  when:
+    event:
+      - push
+    branch:
+      - main
+    instance:
+      - drone-pr.rancher.io
 volumes:
-- name: docker
-  host:
-    path: /var/run/docker.sock
+  - name: docker
+    host:
+      path: /var/run/docker.sock
+  - name: dindsock
+    temp: {}
 
 ...

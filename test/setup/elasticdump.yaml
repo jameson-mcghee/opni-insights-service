@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: elasticdump-bash
+  labels:
+    app: elasticdump-bash
+spec:
+  containers:
+    - name: elasticdump-bash
+      image: jamesonmcg/testreqs:v0.1.0
+      command: 
+        - tail
+      args:
+        - -f
+        - /dev/null

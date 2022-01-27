@@ -1,0 +1,33 @@
+---
+apiVersion: opni.io/v1beta1
+kind: OpniCluster
+metadata:
+  name: cluster
+  namespace: opni-system
+spec:
+  version: v0.3.0
+  deployLogCollector: true
+  services:
+    drain:
+      enabled: false
+    gpuController:
+      enabled: false  # Set this to true for a a cluster with a GPU
+    inference:
+      enabled: false
+    preprocessing:
+      enabled: false
+    payloadReceiver:
+      enabled: false
+    metrics:
+      enabled: false # metrics anomaly detection is currently beta
+    insights:
+      enabled: true
+      image: rancher/opni-insights-service
+    ui:
+      enabled: false
+  elastic:
+    version: 1.1.0
+  s3:
+    internal: {}
+  nats:
+    authMethod: nkey

@@ -1,0 +1,4 @@
+allowedContexts:
+  - local
+  - k3d-k3s-tilt-opni-insights
+  - insights-cluster-jrm

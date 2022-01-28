@@ -31,8 +31,11 @@ k8s_kind('OpniCluster', api_version='opni.io/v1beta1', image_json_path='{.spec.s
 k8s_resource('cluster', resource_deps=['opni'])
 
 
-# This will deploy the custom elasticdump pod, and run elasticdump for data setup
-local_resource('Elasticdump_Pod_Data', 'kubectl apply -f ')
+# This will deploy an elasticdump-ready pod
+local_resource('Elasticdump_Pod_Data', 
+    'kubectl apply -f https://raw.githubusercontent.com/jameson-mcghee/opni-insights-service/insights-tilt-file/test/setup/elasticdump.yaml')
+# This tells tilt to wait for the elasticdump-ready pod.
+k8s_resource('pod', resource_deps=['Elasticdump_Pod_Data'])
 
 
 # Next we tell Tilt to build a custom image for insights with the latest code

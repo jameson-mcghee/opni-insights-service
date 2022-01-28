@@ -68,15 +68,12 @@ steps:
   image: jamesonmcg/testreqs:v0.1.0
   commands:
     - until test -f ./kubeconfig.yaml; do sleep 1s; done
-    - echo "kubeconfig.yaml found"
-    - git clone https://github.com/rancher/opni.git /tmp/opni
-    - echo "Cloned opni"
-    - cp -f /src/opni-insights-service/tests/sonobuoy/kustomization.yaml /tmp/opni/deploy/kustomization.yaml
-    - echo "Copied kustomization.yaml"
-    - pushd /tmp/opni
     - tilt ci
     - echo "Tilt CI completed"
-    - popd
+    - echo "Data setup started"
+    - test/setup/elasticdump_data_setup.sh
+    - echo "Data setup completed"
+    - echo "Sonobuoy started"
     - sonobuoy/shell_scripts/sonobuoy_run.sh
     - echo "Sonobuoy completed"
   volumes:

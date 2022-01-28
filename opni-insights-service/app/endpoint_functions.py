@@ -325,72 +325,69 @@ def get_workload_breakdown(pod_breakdown_data):
             )
     return workload_breakdown_dict
 
-
 def get_pod_breakdown(pod_aggregation_data):
     # Get the breakdown of normal, suspicious and anomalous logs by pod.
     pod_breakdown_dict = {"Pods": []}
+    pod_aggregation_dict = dict()
     try:
-        for each_ns_bucket in pod_aggregation_data:
-            pod_buckets = each_ns_bucket["pod_name"]["buckets"]
-            for each_pod_bucket in pod_buckets:
-                if len(each_pod_bucket["key"]) == 0:
-                    continue
-                pod_aggregation_dict = {
-                    "Name": each_pod_bucket["key"],
-                    "Insights": {"Normal": 0, "Suspicious": 0, "Anomaly": 0},
-                    "Namespace": each_ns_bucket["key"],
-                }
-                anomaly_level_buckets = each_pod_bucket["anomaly_level"]["buckets"]
-                for bucket in anomaly_level_buckets:
-                    pod_aggregation_dict["Insights"][bucket["key"]] = bucket[
-                        "doc_count"
-                    ]
-                pod_breakdown_dict["Pods"].append(pod_aggregation_dict)
+        for batch in pod_aggregation_data:
+            for each_result in batch:
+                namespace_name, pod_name, anomaly_level = each_result["key"]["namespace_name"], each_result["key"]["pod_name"], each_result["key"]["anomaly_level"]
+                if not namespace_name in pod_aggregation_dict:
+                    pod_aggregation_dict[namespace_name] = dict()
+                if not pod_name in pod_aggregation_dict[namespace_name]:
+                    pod_aggregation_dict[namespace_name][pod_name] = {"Normal": 0, "Suspicious": 0, "Anomaly": 0}
+                pod_aggregation_dict[namespace_name][pod_name][anomaly_level] = each_result["doc_count"]
+
+        for ns_name in pod_aggregation_dict:
+            for pod_name in pod_aggregation_dict[ns_name]:
+                pod_breakdown_dict["Pods"].append({"Name": pod_name, "Namespace": ns_name, "Insights": pod_aggregation_dict[ns_name][pod_name]})
         return pod_breakdown_dict
     except Exception as e:
         logging.error(f"Unable to aggregate pod data. {e}")
         return pod_breakdown_dict
 
+async def get_aggregated_data(query_body):
+    # Given an Elasticsearch query, fetch all results using composite aggregation.
+    all_aggregation_results = []
+    while True:
+        try:
+            aggregation_results = (await es_instance.search(index="logs", body=query_body))
+            # If an after_key is present, use it to fetch the next batch of aggregations from Elasticsearch. Otherwise, return all aggregations.
+            if "after_key" in aggregation_results["aggregations"]["bucket"]:
+                after_key = aggregation_results["aggregations"]["bucket"]["after_key"]
+                query_body["aggs"]["bucket"]["composite"]["after"] = after_key
+                all_aggregation_results.append(aggregation_results["aggregations"]["bucket"]["buckets"])
+            else:
+                return all_aggregation_results
+        except Exception as e:
+            logging.error(e)
+            return all_aggregation_results
 
 async def get_pod_aggregation(start_ts, end_ts):
     # Get the breakdown of normal, suspicious and anomalous logs by pod and then send over the resulting aggregation to get the pod and workload breakdown.
-
-    query_body = {
+    other_query_body = {
         "size": 0,
         "query": {
             "bool": {
-                "must": [
-                    {"match": {"is_control_plane_log": "false"}},
-                    {"regexp": {"kubernetes.pod_name": ".+"}},
-                ],
+                "must": [{"match": {"is_control_plane_log": "false"}}, {"regexp": {"kubernetes.namespace_name": ".+"}}],
                 "filter": [{"range": {"timestamp": {"gte": start_ts, "lte": end_ts}}}],
             }
         },
         "aggs": {
-            "namespace_name": {
-                "terms": {"field": "kubernetes.namespace_name.keyword"},
-                "aggs": {
-                    "pod_name": {
-                        "terms": {"field": "kubernetes.pod_name.keyword"},
-                        "aggs": {
-                            "anomaly_level": {
-                                "terms": {"field": "anomaly_level.keyword"}
-                            }
-                        },
-                    }
-                },
-            },
-        },
+            "bucket": {
+                "composite": {
+                    "size": 1000,
+                    "sources": [{"namespace_name": {"terms": {"field":"kubernetes.namespace_name.keyword"}}}, {"pod_name": {"terms": {"field": "kubernetes.pod_name.keyword"}}}, {"anomaly_level": {"terms": {"field": "anomaly_level.keyword"}}}],
+                }
+            }
+        }
     }
-
     try:
-        ns_pod_level_buckets = (
-            await es_instance.search(index="logs", body=query_body)
-        )["aggregations"]["namespace_name"]["buckets"]
-        pod_breakdown_dict = get_pod_breakdown(ns_pod_level_buckets)
+        pod_aggregation_data = await get_aggregated_data(other_query_body)
+        pod_breakdown_dict = get_pod_breakdown(pod_aggregation_data)
         workload_breakdown_dict = get_workload_breakdown(pod_breakdown_dict)
         return pod_breakdown_dict, workload_breakdown_dict
-
     except Exception as e:
         logging.error(f"Unable to breakdown pod insights. {e}")
         return {"Pods": []}, {}
@@ -568,7 +565,7 @@ async def get_areas_of_interest(start_ts, end_ts):
         return areas_of_interest
 
 async def get_namespace_breakdown(start_ts, end_ts):
-    # Get the breakdown of normal, suspicious and anomolous logs by namespace.
+    # Get the breakdown of normal, suspicious and anomalous logs by namespace.
     namespace_breakdown_dict = {"Namespaces": []}
 
     query_body = {
@@ -580,32 +577,30 @@ async def get_namespace_breakdown(start_ts, end_ts):
             }
         },
         "aggs": {
-            "namespace_name": {
-                "terms": {"field": "kubernetes.namespace_name.keyword"},
-                "aggs": {
-                    "anomaly_level": {"terms": {"field": "anomaly_level.keyword"}}
-                },
+            "bucket": {
+                "composite": {
+                    "size": 1000,
+                    "sources": [{"namespace_name": {"terms": {"field":"kubernetes.namespace_name.keyword"}}}, {"anomaly_level": {"terms": {"field": "anomaly_level.keyword"}}}],
+                }
             }
-        },
+        }
     }
-
+    namespace_aggregation_dict = dict()
     try:
-        namespace_level_buckets = (
-            await es_instance.search(index="logs", body=query_body)
-        )["aggregations"]["namespace_name"]["buckets"]
-        for each_ns_bucket in namespace_level_buckets:
-            if len(each_ns_bucket["key"]) == 0:
-                continue
-            namespace_aggregation_dict = {
-                "Name": each_ns_bucket["key"],
-                "Insights": {"Normal": 0, "Suspicious": 0, "Anomaly": 0},
+        namespace_aggregation_results = await get_aggregated_data(query_body)
+        for batch in namespace_aggregation_results:
+            for each_result in batch:
+                namespace_name, anomaly_level = each_result["key"]["namespace_name"], each_result["key"]["anomaly_level"]
+                if not namespace_name in namespace_aggregation_dict:
+                    namespace_aggregation_dict[namespace_name] = {"Normal": 0, "Suspicious": 0, "Anomaly": 0}
+                namespace_aggregation_dict[namespace_name][anomaly_level] = each_result["doc_count"]
+
+        for namespace in namespace_aggregation_dict:
+            individual_namespace_dict = {
+                "Name": namespace,
+                "Insights": namespace_aggregation_dict[namespace]
             }
-            anomaly_level_buckets = each_ns_bucket["anomaly_level"]["buckets"]
-            for bucket in anomaly_level_buckets:
-                namespace_aggregation_dict["Insights"][bucket["key"]] = bucket[
-                    "doc_count"
-                ]
-            namespace_breakdown_dict["Namespaces"].append(namespace_aggregation_dict)
+            namespace_breakdown_dict["Namespaces"].append(individual_namespace_dict)
     except Exception as e:
         logging.error(f"Unable to access Elasticsearch data. {e}")
         return namespace_breakdown_dict
